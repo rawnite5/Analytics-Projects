@@ -1,0 +1,749 @@
+---
+title: "Final Project: Factors affecting Life Expectancy"
+subtitle: "Team Gapminder"
+author: "Chinmayee, Chinmayee, Jordan, Nitesh"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(broom)
+library(arm)
+library(gridExtra)
+library(grid)
+library(ggpubr)
+library(MASS)
+cbPalette <- c("darkblue","blue", "deepskyblue3","cyan4","darkturquoise","cornflowerblue","blueviolet","mediumorchid","darkmagenta","deeppink1","darkgoldenrod2","lightsalmon","darkorange2", "chocolate4","black","cornsilk4","darkgrey","darkslategray4")
+```
+
+
+# Introduction: 
+
+Our research is concerned with discovering relationships between average life expectancy by country and various explanatory variables for each country. The explanatory variables we are specifically interested in for each country are per-capita gross domestic product (GDP), per-capita healthcare spending, income inequality as measured by the gini coefficient, and continent. 
+
+We know that per-capita GDP is a very strong predictor of average life expectancy and that this prediction is even stronger when the continent of the country is considered. That said, the goal of our research is to discern whether the gini coefficient or per-capita healthcare spending explain variation in average life expectancy beyond what per-capita GDP and continent can explain. Using datasets from Gapminder, a non-profit organization dedicated to providing free datasets for purposes like ours, we sought to answer the following questions about the relationships between average life expectancy by country and our explanatory variables:
+
+* What is the relationship, if there is any, between gini coefficient and average life expectancy after controlling for per-capita GDP and continent? 
+
+  + Is this relationship different if we also control for per-capita healthcare spending?
+
+  + Is this relationship different for different continents or different time periods?
+
+* What is the relationship, if there is any, between per-capita healthcare spending and average life expectancy after controlling for per-capita GDP and continent?
+
+  + Is this relationship different if we also control for the gini coefficient?
+
+  + Is this relationship different for different continents or different time periods?
+
+* Does the relationship between gini coefficient and average life expectancy depend on the country’s per capita GDP, continent, or per-capita healthcare spending?
+
+* Does the relationship between per-capita healthcare spending and average life expectancy depend on the country’s per capita GDP, continent, or gini coefficient?
+
+To answer these questions, we decided to fix most of our analysis in one particular year to control for the effect that time might have on our relationships, and we chose the year 2009 for data-availability related reasons. After preprocessing our data, we’re left with a dataset that consists of 5 measurements for each of our observations where the measurements are our 4 explanatory variables and average life expectancy, and each observation is an individual country. 
+
+
+# Data Preparation
+
+The Data used for this analysis is taken from the Gapminder package -  (https://www.gapminder.org/data/). We used 4 datasets each containing yearly observations of a variable by country The four variables we are interested in: 
+1. Average Life Expectancy in Years  - Data Files/GM-Life Expectancy- Dataset - v11.xlsx
+2. Real GDP per Capita in US Dollars - Data Files/gdp_percap.csv
+3. Dispersion of income throughout the population as measured by the gini coefficient - Data Files/_Gini Data - v3 - by Gapminder.xlsx
+4. Healthcare spending in US dollars per capita - Data Files/HealthcareSpending.xlsx
+
+After merging the 4 datasets we ended up with 175 countries for the period 1995-2009, this is the overlap between all datasets. We found that the data in Healthcare spending and GDP is extrapolated for the future/missing years and the Gini coefficient data has 40 as default for missing values. To avoid contamination of data and its ripple effect on modeling we decided to use the valid and actual data as much as we could.
+
+To help visualize and draw insights better for our higher level analysis we grouped the countries by Continent for each year and aggregated the variable values. Based on the top level analysis we created our models but for modeling purposes we used country wise data without any aggregation, we also factored in the variable continent in our model because we believe that life expectancy can also be influenced by the living conditions, resources, geography etc of the continent. After the pre-processing we ended up with a total of 2585 data points in our master dataset. 
+
+Additionally, we excluded Oceania from our faceted graphs since there are not many countries in Oceania to make any conclusion.
+
+
+
+
+```{r include=FALSE}
+continents = read.csv('continents.txt', sep = ' ')
+
+lifeexp = readxl::read_excel('GM-Life Expectancy- Dataset - v11.xlsx', sheet = 'data-for-countries-etc-by-year')
+
+income = readxl::read_excel('_Gini Data - v3 - by Gapminder.xlsx', sheet = 'data-for-countries-etc-by-year')
+income = income[,seq(1,4)]
+
+HealthcareSpending <- readxl::read_excel('HealthcareSpending.xlsx')
+names(HealthcareSpending)[1] = "name"
+names(HealthcareSpending)[2:17] <- as.numeric(names(HealthcareSpending[2:17]), 1)
+HealthcareSpending <- HealthcareSpending %>%
+  pivot_longer(cols = c(2:17),
+               names_to = "time",
+               values_to = "spending")
+
+GDPperCapita <- read.csv("gdp_percap.csv", header = TRUE)
+names(GDPperCapita)[1] = "name"
+names(GDPperCapita)[2:62] <- substring(names(GDPperCapita)[2:62], 2)
+
+GDPperCapita <- GDPperCapita %>%
+  pivot_longer(cols = c(2:62),
+               names_to = "time",
+               values_to = "gdp")
+for (i in 1:length(GDPperCapita$gdp)) {
+  if (GDPperCapita$gdp[i] == "") {
+    GDPperCapita$gdp[i] = NA
+  } else if (grepl("k", GDPperCapita$gdp[i])) {
+    GDPperCapita$gdp[i] = as.numeric(substr(GDPperCapita$gdp[i], 1, nchar(GDPperCapita$gdp[i])-1)) * 1000
+  } else {
+    GDPperCapita$gdp[i] = as.numeric(GDPperCapita$gdp[i])
+  }
+}
+GDPperCapita$gdp = as.numeric(GDPperCapita$gdp)
+```
+
+
+
+```{r include=FALSE}
+# Filter data for the period 1995 and 2009.
+income = filter(income, time >= 1995 & time <= 2009)
+lifeexp = filter(lifeexp, time >= 1995 & time <= 2009)
+GDPperCapita = filter(GDPperCapita, time >= 1995 & time <= 2009)
+HealthcareSpending = filter(HealthcareSpending, time >= 1995 & time <= 2009)
+```
+
+```{r include=FALSE}
+# remove any na values 
+income = na.omit(income)
+lifeexp = na.omit(lifeexp)
+HealthcareSpending = na.omit(HealthcareSpending)
+GDPperCapita = na.omit(GDPperCapita)
+```
+
+```{r include=FALSE}
+# merge all the data and create a master table.
+
+gapminder = merge(income, lifeexp, by = c('name', 'time'), all = T)
+gapminder = merge(gapminder, HealthcareSpending, by = c('name', 'time'), all = T)
+gapminder = merge(gapminder, GDPperCapita, by = c('name', 'time'), all = T)
+gapminder = merge(gapminder, continents, by = 'name', all.x = T) 
+gapminder = gapminder %>% dplyr::select('continent', 'name', 'time', 'Gini', 'Life expectancy', 'spending', 'gdp')
+names(gapminder) = c('continent', 'country', 'year', 'gini', 'lifeexp', 'spending', 'gdp')
+gapminder$year = as.numeric(gapminder$year) 
+gapminder = na.omit(gapminder)
+gapminder$gdp.log = log(gapminder$gdp)
+gapminder$spending.log = log(gapminder$spending)
+```
+
+```{r include=FALSE}
+# Aggregate data at continent level for each year.
+
+gapminder.agg = gapminder %>% group_by(continent, year)  %>%  summarise(gini.agg = mean(gini, na.rm = T), lifeexp.agg = mean(lifeexp, na.rm = T), spending.agg = mean(spending, na.rm = T), gdp.agg = mean(gdp, na.rm = T))
+```
+
+
+```{r include=FALSE}
+gapminder.change = gapminder %>% 
+  filter(year %in% c(1995, 2009))  %>% 
+  arrange(country, year) %>%
+  group_by(country) %>%
+  mutate(gini.lag = lag(gini), 
+         spending.log.lag = lag(spending.log),
+         lifeexp.lag = lag(lifeexp),
+         gdp.log.lag = lag(gdp.log)
+         ) 
+
+gapminder.change = na.omit(gapminder.change)
+
+gapminder.change = gapminder.change %>%
+  mutate(gini.change = round((gini-gini.lag)/gini.lag*100,2),
+         lifeexp.change = round((lifeexp-lifeexp.lag)/lifeexp.lag*100,2),
+         gdp.change = round((gdp.log-gdp.log.lag), 2),
+         spending.change = round((spending.log-spending.log.lag), 2)
+         )
+```
+
+
+# Data Analysis
+
+```{r echo=FALSE}
+ggplot(gapminder.agg, aes(x = year, y = lifeexp.agg, color = continent)) + 
+  geom_line()  +
+  theme(text = element_text(size = 10, face = "bold"), 
+        legend.box.just = "center",
+        plot.title = element_text(size = 12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face="bold"),
+        ) + 
+  labs(
+    title = "Plot 1: Average Life Expectancy by Continent from 1995 - 2009",
+    subtitle = "*Each continent's life expectancy is an average of its country averages",
+    x = "Year",
+    y = "Average life expectancy in years") +
+  scale_color_viridis_d()
+```
+
+Average life expectancy has been increasing in the period 1995-2009 across continents. However, we can see a considerable difference between the 5 continents, with Africa having the lowest life expectancy and Europe the highest. Life expectancy is known to be directly dependent upon the development status of a country. It is considered that developed countries have more resources and advanced infrastructure to provide proper healthcare, which directly or indirectly leads to higher average life expectancies than those of economically weak/developing countries. One of the key indicators for a country's development is gross domestic product per capita. The more the GDP per capita of a country, the developed a country is assumed to be. However, in this project, we will look into economic aspects such as income inequality and government spending in healthcare besides GDP per capita that explains higher or lower life expectancy in a particular country.
+
+
+```{r include=FALSE}
+# Filter out 2009 and 1995 data for separate analysis
+gapminder.2009 = filter(gapminder, year == 2009)
+gapminder.1995 = filter(gapminder, year == 1995)
+```
+
+```{r fig.height= 4, fig.width=8, fig.align="center", include=FALSE}
+gg1= ggplot(gapminder.2009, aes(x = gdp.log, y = lifeexp, color = continent)) + 
+  geom_point(alpha = 0.25)  +
+  geom_smooth(method = 'lm', se = F) + 
+  theme(text = element_text(size = 12, face = 'bold'), 
+        legend.box.just = "center",
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face = 'bold'),
+        ) + 
+  labs(
+    title = "GDP Per Capita",
+    x = "Log of GDP Per Capita") +
+  scale_color_viridis_d()
+
+gg2 = ggplot(gapminder.2009, aes(x = gini, y = lifeexp, color = continent)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = 'lm', se = F) +
+  theme(text = element_text(size = 12, face = 'bold'), 
+        legend.box.just = "center",
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face = 'bold'),
+        ) + 
+  labs(
+    title = "Income Inequality",
+    x = "Income Inequality Gini Index") +
+  scale_color_viridis_d()
+
+gg3 = ggplot(gapminder.2009, aes(x = spending.log, y = lifeexp, color = continent)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = 'lm', se = F) +
+  theme(text = element_text(size = 12, face = 'bold'), 
+        legend.box.just = "center",
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face = 'bold'),
+        ) + 
+  labs(
+    title = "Plot 2: Health Spending Per Capita",
+    x = "Log of health spending per capita in USD") +
+  scale_color_viridis_d()
+```
+
+```{r fig.height= 4, fig.width=10, fig.align="center",echo=FALSE, warning=FALSE,message=FALSE}
+# ggarrange(gg1,gg2, gg3, ncol = 3, left = "Average Life Expectancy in Years", top = textGrob('Plot 2 : Relation of Life Expectancy w/'), common.legend = TRUE, legend="bottom", font.label = list(size = 5, color = "black", face = "bold", family = NULL))
+
+# grid.arrange(gg1,gg2,gg3, ncol = 3, left = "Average Life Expectancy in Years", top = textGrob(expression(bold('Plot 2 : Relation of Life Expectancy w/'))))
+
+ggrid = ggarrange(gg1,gg2, gg3, ncol = 3, common.legend = TRUE, legend="bottom", font.label = list(size = 5, color = "black", face = "bold", family = NULL))
+annotate_figure(ggrid, left = "Average Life Expectancy in Years", top = textGrob('Plot 2 : Relation of Life Expectancy w/'))
+```
+
+#
+
+As expected, we see a direct relationship between life expectancy and GDP per capita. Additionally, we can observe lower life expectancy in African and American countries with high income inequality and vice versa. Also, there is a direct relationship between life expectancy and total health spending per capita, i.e., countries with high total health spending per capita have higher life expectancy than countries that spend less $ per capita on healthcare. Nevertheless, we cannot ignore the influence of GDP per capita in the latter relationship. As for the same proportion of health spending of GDP, a country with high GDP per capita has higher total health spending than a country with low GDP per capita. Hence, it become imperative to look into other plots to understand these relationships.
+
+#
+
+
+```{r, fig.width=10, fig.height=5,echo=FALSE,warning=FALSE,message=FALSE}
+ggplot(data = filter(gapminder.2009, (continent != "Oceania") & !(continent == "Americas" & gini <= 34.7)), mapping = aes(x = gdp.log, y = lifeexp)) +
+  geom_point() +
+  geom_smooth(se = FALSE, method = 'lm') +
+  facet_wrap(~ continent+cut_number(gini, 3), ncol = 5) + scale_color_viridis_d() + 
+  theme(text = element_text(size = 10, face = "bold"), 
+        legend.box.just = "center",
+        plot.title = element_text(size = 16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 14),
+        axis.title = element_text(size = 12, face="bold"),
+        ) + 
+  labs(
+    title = "Plot 3: Life Expectancy vs Log of GDP Per Capita by Income Inequality and Continent",
+    subtitle = "Year 2009",
+    x = "GDP Per Capita on Log Scale",
+    y = "Average Life Expectancy in Years") 
+```
+
+#
+
+A few points to note here are that there is no country in Europe with gini more than 42 (high inequality group), and no country in the Americas has gini less than 34.7 (low inequality group) except Canada (removed). It is interesting to see that African countries with higher income inequality have lower life expectancy than countries with lower income inequality, whereas the trend is non-conclusive for other continents.  Also, in our analysis, we did not see any significant difference in the trend between the years 1995 (appendix) and 2009. Hence, we checked this relationship by fitting a model for the year 2009 alone.
+
+#
+
+```{r, fig.width=10, fig.height=5,echo=FALSE,warning=FALSE,message=FALSE}
+ggplot(data = filter(gapminder.2009, (continent != "Oceania") & !(continent == "Americas" & spending.log <= 4.81) & !(continent == "Africa" & spending.log > 6.44)), 
+       mapping = aes(x = gdp.log, y = lifeexp)) +
+  geom_point() +
+  geom_smooth(se = FALSE, method = 'lm') +
+  facet_wrap(~ continent+cut_number(spending.log, 3), ncol = 5) + 
+  scale_color_viridis_c() +
+  theme(text = element_text(size = 10, face = "bold"), 
+        legend.box.just = "center",
+        plot.title = element_text(size = 15, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 13),
+        axis.title = element_text(size = 12, face="bold"),
+        ) + 
+  labs(
+    title = "Plot 4: Expectancy vs Log of GDP Per Capita by Continent and Healthcare Spending",
+    subtitle = "Year 2009",
+    x = "GDP Per Capita on Log Scale",
+    y = "Average Life Expectancy in Years") 
+```
+
+Countries with higher health spending per capita seem to have higher life expectancy than the countries with lower spending per capita on healthcare. However, we can notice that the countries with higher per-capita healthcare spending also have higher per-capita GDP which makes sense since countries that produce more econmic output per person tend to spend more money per person. While it does seem that per-capita healthcare spending does positively relate to average life expectancy, we believe this is probably only due to its relationship with per-capita GDP which appears to have more explanatory power. Moreover, our findings regarding this matter do not change significantly for the years between 1995 and 2009.
+
+
+# Modeling
+
+In order to more formally evaluate the explanatory power of per-capita healthcare spending and income inequality, we will first develop a baseline model using only per-capita GDP and continent as predictors, and see if we can improve on that model by adding terms that include per-capita healthcare spending or gini coefficient.
+
+```{r echo=FALSE, fig.width=5, fig.height=4,warning=FALSE,message=FALSE}
+# Baseline model
+baseline.model = lm(lifeexp ~ gdp.log + continent, data = gapminder.2009)
+baseline.model.df = augment(baseline.model)
+baseline.model.df$.resid = residuals(baseline.model)
+gg4 = ggplot(baseline.model.df, aes(x = gdp.log, y = .resid))+
+  geom_point()+
+  geom_smooth()+ 
+  theme(text = element_text(size = 10, face = "bold"), 
+        axis.title.y = element_blank(),
+        legend.box.just = "center",
+        plot.title = element_text(size = 12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face="bold"),
+        ) + 
+  labs(
+    title = "Plot 5.1: GDP per capita (Baseline)",
+    subtitle = "(lifeexp ~ gdp.log + continent) for the year 2009.",
+    x = "GDP Per Capita on Log Scale",
+    y = "Residual") 
+#AIC(baseline.model)
+```
+
+
+```{r echo=FALSE, fig.width=5, fig.height=4,warning=FALSE,message=FALSE}
+# Main Model
+model.test = lm(lifeexp ~ gdp.log + continent + continent : gini, data = gapminder.2009)
+model.test.df = augment(model.test)
+model.test.df$.resid = residuals(model.test)
+gg5 = ggplot(model.test.df, aes(x = gini, y = .resid)) + 
+  geom_point()+ 
+  geom_smooth(method = "loess", method.args = list(degree = 1)) + 
+  theme(text = element_text(size = 10, face = "bold"),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        legend.box.just = "center",
+        plot.title = element_text(size = 12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face="bold"),
+        ) + 
+  labs(
+    title = "Plot 5.2: Gini Income Inequality ",
+    subtitle = "(lifeexp ~ gdp.log + continent + continent : gini) for the year 2009",
+    x = "Gini Income Inequality",
+    y = "Residual") 
+```
+
+The best model we could fit that can include the gini coefficient and per-capita healthcare spending as predictors was a linear model that includes the main effects of per-capita GDP on a log scale and continent as well as an interaction between continent and gini coefficient. Moreover, none of the models we considered changed significantly when adding per-capita healthcare spending was considered which is consistent with our findings from plot 4. We decided to use a linear model because the non-parametric models we tested which included GAMs and Loess models did not offer significant imporvements in prediction, and linear models are the most interpretable. Below are residual plots of the baseline and alternative models which show that the models' errors are pretty randomly scattered about the line y = 0. 
+
+```{r fig.height= 4, fig.width=10, fig.align="center",echo=FALSE, warning=FALSE,message=FALSE}
+# ggarrange(gg1,gg2, gg3, ncol = 3, left = "Average Life Expectancy in Years", top = textGrob('Plot 2 : Relation of Life Expectancy w/'), common.legend = TRUE, legend="bottom", font.label = list(size = 5, color = "black", face = "bold", family = NULL))
+
+grid.arrange(gg4,gg5, ncol = 2, left = 'Residual' , top = textGrob(expression(bold('Plot 5: Life Expectancy Residual Plot w/'))))
+```
+
+#
+
+```{r echo=FALSE}
+display(model.test)
+```
+
+As you can see from the model display above, our model appears to be explaining a lot of variation in average life expectancy by country. As expected we see a positive coefficient next to per-capita GDP. From our analysis so far, we know that African countries have lower life expectancies than Asian, European, and American countries. However, for the continent which is a factor variable, Africa is the baseline factor, and all the coefficients next to each continent are negative besides Oceania which we can ignore since there are so few countries in that continent. This is the case because the relationship between the gini coefficient and average life expectancy is, assuming our model is perfect, negative in Africa after controlling for per-capita GDP. Our model suggests that this isn't the case in other continents, and so it doesn't decrease its prediction in non-African countries depending on its gini coefficient. Nevertheless, the interaction term between the gini coefficient and Africa is very interesting considering the interaction terms for Asia, Europe, and the Americas are insignificant. This would suggest that our alternative model only differs in prediction with the baseline model if the country the models are predicting on is in Africa. We see this to be case when we plot the models below: 
+
+
+```{r include=FALSE}
+# Prediction matrix
+predictionMatrix = expand.grid(gdp.log = seq(5.75, 11.5, 0.05), 
+                                gini = seq(24, 64, 20), 
+                                continent = c(unique(gapminder.2009$continent)))
+
+baseline.preds = predict(baseline.model, newdata = predictionMatrix, type = "response")
+
+model.test.pred = predict(model.test, newdata = predictionMatrix, type = "response")
+
+model.test.pred.df = data.frame(predictionMatrix, baseline = baseline.preds, Alternative = model.test.pred)
+
+model.test.pred.df.plot <- pivot_longer(model.test.pred.df, 
+                        cols = c(baseline, Alternative),
+                        names_to = "Model",
+                        values_to = "PredictedLifeExpectancy"
+                        )
+```
+
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+ggplot(data = filter(model.test.pred.df.plot, continent!= "Oceania"), mapping = aes(x = gdp.log, y = PredictedLifeExpectancy, color = Model)) +
+  geom_line()+
+  facet_wrap(~ continent + gini, ncol = 6) + 
+  # scale_color_viridis_d() +
+  theme(text = element_text(size = 10, face = "bold"), 
+        legend.box.just = "center",
+        plot.title = element_text(size = 12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face="bold"),
+        ) + 
+  labs(
+    title = "Plot 6: Predicted Life Expectancy Vs GDP By Gini Coefficient",
+    subtitle = "Year 2009",
+    x = "GDP Per Capita on Log Scale",
+    y = "AverageLife Expectancy in Years") 
+```
+
+As you can see from the plot above, our model is only making predictions that are significantly different for countries in Africa. As the gini coefficient increases across the 3 different values it is fixed for in the plot above, you can see that for Africa, the models predictions shift downward significantly. It does appear that a higher gini coefficient does predict lower average life expectancy but only in Africa. In other countries, it appears that the baseline model and the new model making almost exactly the same predictions which suggests that the gini coefficient doesn't explain any variation in average life expectancy across countries beyond what per-capita GDP and continent already explain. Assuming our model isn't over-fitting, this suggests that, yes, the gini coefficient adds explanatory power, but only in Africa. To test our model for over-fitting, we can see how the coefficients of the model change as we train it on data in different fixed years. This approach leaves our interpretation of the importance of the gini coefficient and how that changes over time susceptible to temporal autocorrelation, but seeing how our model differs between years can yeild some valuable insight nevertheless:
+
+
+## Over the years coefficient trend.
+
+```{r include=FALSE}
+gini.model.subset = function(my.year, data){
+  newdata = filter(data, year == my.year)
+  newdata = filter(newdata)
+  model = lm(lifeexp ~ gdp.log + continent + continent : gini, data = newdata)
+  output = data.frame(year = my.year, gini.coef = summary(model)$coef[7:10,1], gini.se = summary(model)$coef[7:10,2])
+  output$continent = sub(":gini", "", sub('continent', "", rownames(output), perl = T), perl = T)
+  return(output)
+}
+```
+
+
+```{r include=FALSE}
+years = seq(1995, 2009)
+n = length(years)
+gini.by.year = data.frame(year = NA, gini.coef = NA, gini.se = NA, continent = NA)
+
+for (i in seq(1,n)){
+  my.year = years[i]
+  gini.by.year = rbind(gini.by.year, gini.model.subset(my.year = my.year, data = gapminder))}
+```
+
+
+```{r echo=FALSE}
+# View(gini.by.year)
+```
+
+
+```{r echo=FALSE,warning=FALSE,message=FALSE,fig.width=6, fig.height=3}
+ggplot(gini.by.year, aes(x = year, y = gini.coef, color = continent)) + 
+  geom_point() + 
+  geom_smooth(method = "loess", method.args = list(family = "symmetric"), se = FALSE) +
+  theme(text = element_text(size = 10, face = "bold"), 
+        legend.box.just = "center",
+        plot.title = element_text(size = 12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face="bold"),
+        ) + 
+  labs(
+    title = "Plot 7: Variation in Coefficient of Gini in Linear Model",
+    subtitle = "lm(formula = lifeexp ~ gdp.log + continent + continent:gini)",
+    x = "Years",
+    y = "Coefficient of gini in linear model") + 
+  scale_fill_viridis_d()
+```
+
+As you can see from the plot above, the model term for the gini coefficient is close to 0 and somewhat constant over the time period from 1995 for the Americas, Europe, and Asia. More interestingly, we see that the coefficient for that term in Africa starts negative but close to 0 and decreases significantly, or moves further away from 0, over the time period from 1995 to 2009. This suggests that, assuming our model isn't similarly over-fitting the data in African countries for each year from 1995 to 2009, the gini coefficient's ability to explain variation in average life expectancy in African countries has increased dramatically from 1995 to 2009. Our model comparisons in 2009 and over the 1995 to 2009 time period yield very interesting results for African countries, but these results shouldn't be interpreted to mean there's a causal relationship between income inequality and average life expectancy. The dramatic increase in the gini coefficient's importance in predicting average life expectancy over the time period 1995 to 2009 suggests that the gini coefficient probably has some explanatory power but it's more likely the result of confounding involving complicated relationships among other variables that are outside the scope of our research.
+
+
+# Conclusion
+
+We found that per-capita healthcare spending does not explain any variation in average life expectancy beyond what per-capita GDP already explains. As one might expect, per-capita healthcare spending and per-capita GDP are very closely related since countries that produce more per person tend to spend more per person. Per-capita healthcare spending does explain variation in life expectancy, but it appears to explain the same variation that per-capita GDP explains. However, we found per-capita GDP to be a stronger explanatory variable so per-capita healthcare spending does not add any explanatory power. These findings remain the same after also controlling for gini coefficient. 
+
+More interestingly, we found that the gini coefficient does explain some variation in average life expectancy by country beyond what per-capita gdp and continent can explain. However, the gini coefficient appears to only add explanatory power in African countries. In Europe, Asia, and the Americas, we found that the gini coefficient doesn’t tell us any information about average life expectancy in a particular country beyond what the main effects of per-capita GDP and continent already tell us. However, in Africa, there appears to be a negative relationship between the gini coefficient and average life expectancy even after controlling for per-capita GDP. This relationship was very weak and perhaps insignificant in 1995 but grew more strongly negative over the time period from 1995 to 2009. 
+
+It does seem plausible that greater income inequality would imply lower average life expectancy because if two countries generate the same amount of wealth and resources over a particular time frame but one country allocates more resources to smaller subsets of people, that country probably has more people with less access to basic human needs which would probably result in a lower average life expectancy. However, we do not feel confident making this assertion since after adjusting for the main effects of per-capita GDP and continent, we only saw this relationship in Africa. Moreover, we believe it is possible that there’s some variable or variables that are only relevant in Africa and are related to the gini coefficient that confound the relationship between the gini index and average life expectancy in African countries. 
+
+While our findings regarding the importance of the gini coefficient in predicting average life expectancy for a particular country in Africa don't yield any concrete conclusions about the precise nature of how income inequality impacts average life expectancy in a particular country, we believe that they serve as a basis for a more thorough investigation of factors that impact life expectancy. More thorough research could possibly explain why and how variation in the gini coefficient explains variation in average life expectancies in African countries 2009, or perhaps why our findings were so different or African and non-African countries, or perhaps why the gini coefficient's explanatory power beyond the main effects of per-capita GDP and continent. Future work in this area would probably involve the consideration of cultural, political, and geographic variables that could possibly expand our understanding of the relationships that seem apparent in our data anaysis and modeling. 
+
+
+Our findings are interesting but come with the following limitations:
+
+* The relationship we found between the gini coefficient and average life expectancy in Africa appear to have become more strongly negative from 1995 to 2009, but with the data we have it’s impossible to say whether this relationship is real or whether there are some confounding variables.
+
+* There are very different amounts of data in different areas of the feature space. For instance, typical African and American countries have greater income equality than Asian and European countries. Furthermore, typical African countries have lower per-capita GDPs than typical countries in the other continents. This sub-optimal distribution of observations across the feature space limits our ability to draw conclusions from our findings.
+
+* We evaluated the explanatory power of many variables at once, and we only have about 170 countries to use as observations in any particular year. That said, it’s difficult to distinguish between signal and noise when constructing plots and models.
+
+* Our findings assume the data provided by Gapminder is perfectly accurate which is not a reasonable assumption in our case. It’s entirely possible that average life expectancies or gini coefficients are, in actuality, very different than Gapminder’s estimations.
+
+
+
+```{r include=FALSE,echo=FALSE}
+gapminder.2009$perc_spending = gapminder.2009$spending/gapminder.2009$gdp
+
+model.test.perc = lm(lifeexp ~ perc_spending + continent, data = gapminder.2009)
+model.test.perc.df = augment(model.test.perc)
+model.test.perc.df$.resid = residuals(model.test.perc)
+ggplot(model.test.perc.df, aes(x = perc_spending, y = .resid)) + 
+  geom_point()+ 
+  geom_smooth(method = "loess", method.args = list(degree = 1)) + 
+  theme(text = element_text(size = 10, face = "bold"), 
+        legend.box.just = "center",
+        plot.title = element_text(size = 12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face="bold"),
+        ) + 
+  labs(
+    title = "Plot #: Life Expectancy and Gini Inequality Residual Plot",
+    subtitle = "Accounted GDP per capita for year 2009.",
+    x = "Gini Income Inequality",
+    y = "Residual")
+
+#lm(life ~ perc_spending + continent)
+AIC(model.test.perc)
+summary(model.test.perc)
+```
+
+\newpage
+
+# Appendix
+
+```{r fig.height= 4, fig.width=8, fig.align="center", include=FALSE}
+gg6= ggplot(gapminder.1995, aes(x = gdp.log, y = lifeexp, color = continent)) + 
+  geom_point(alpha = 0.25)  +
+  geom_smooth(method = 'lm', se = F) + 
+  theme(text = element_text(size = 12, face = 'bold'), 
+        legend.box.just = "center",
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face = 'bold'),
+        ) + 
+  labs(
+    title = "GDP Per Capita",
+    x = "Log of GDP Per Capita") +
+  scale_color_viridis_d()
+
+gg7 = ggplot(gapminder.1995, aes(x = gini, y = lifeexp, color = continent)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = 'lm', se = F) +
+  theme(text = element_text(size = 12, face = 'bold'), 
+        legend.box.just = "center",
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face = 'bold'),
+        ) + 
+  labs(
+    title = "Income Inequality",
+    x = "Income Inequality Gini Index") +
+  scale_color_viridis_d()
+
+gg8 = ggplot(gapminder.1995, aes(x = spending.log, y = lifeexp, color = continent)) +
+  geom_point(alpha = 0.1) +
+  geom_smooth(method = 'lm', se = F) +
+  theme(text = element_text(size = 12, face = 'bold'), 
+        legend.box.just = "center",
+        legend.position = "none",
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = 12, hjust = 0.5, face = 'bold'),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face = 'bold'),
+        ) + 
+  labs(
+    title = "Plot A1: Health Spending Per Capita",
+    x = "Log of health spending per capita in USD") +
+  scale_color_viridis_d()
+```
+
+#
+
+
+```{r fig.height= 4, fig.width=10, fig.align="center",echo=FALSE, warning=FALSE,message=FALSE}
+# ggarrange(gg1,gg2, gg3, ncol = 3, left = "Average Life Expectancy in Years", top = textGrob('Plot 2 : Relation of Life Expectancy w/'), common.legend = TRUE, legend="bottom", font.label = list(size = 5, color = "black", face = "bold", family = NULL))
+
+# grid.arrange(gg1,gg2,gg3, ncol = 3, left = "Average Life Expectancy in Years", top = textGrob(expression(bold('Plot 2 : Relation of Life Expectancy w/'))))
+
+ggrid.1995 = ggarrange(gg6,gg7, gg8, ncol = 3, common.legend = TRUE, legend="bottom", font.label = list(size = 5, color = "black", face = "bold", family = NULL))
+annotate_figure(ggrid.1995, left = "Average Life Expectancy in Years", top = textGrob('Plot A1 : Relation of Life Expectancy w/'))
+```
+
+
+#
+
+
+```{r, fig.width=10, fig.height=5,echo=FALSE,warning=FALSE,message=FALSE}
+ggplot(data = filter(gapminder.1995, (continent != "Oceania") & !(continent == "Americas" & gini <= 34.7)), mapping = aes(x = gdp.log, y = lifeexp)) +
+  geom_point() +
+  geom_smooth(se = FALSE, method = 'lm') +
+  facet_wrap(~ continent+cut_number(gini, 3), ncol = 5) + scale_color_viridis_d() + 
+  theme(text = element_text(size = 10, face = "bold"), 
+        legend.box.just = "center",
+        plot.title = element_text(size = 16, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 14),
+        axis.title = element_text(size = 12, face="bold"),
+        ) + 
+  labs(
+    title = "Plot A2: Relationship b/w Life Expectancy and Log of GDP Per Capita by Income Inequality",
+    subtitle = "Year 1995",
+    x = "GDP Per Capita on Log Scale",
+    y = "Average Life Expectancy in Years") 
+```
+
+
+#
+
+
+```{r, fig.width=10, fig.height=5,echo=FALSE,warning=FALSE,message=FALSE}
+ggplot(data = filter(gapminder.1995, (continent != "Oceania") & !(continent == "Americas" & spending.log <= 4.81) & !(continent == "Africa" & spending.log > 6.44)), 
+       mapping = aes(x = gdp.log, y = lifeexp)) +
+  geom_point() +
+  geom_smooth(se = FALSE, method = 'lm') +
+  facet_wrap(~ continent+cut_number(spending.log, 3), ncol = 5) + 
+  scale_color_viridis_c() +
+  theme(text = element_text(size = 10, face = "bold"), 
+        legend.box.just = "center",
+        plot.title = element_text(size = 15, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 13),
+        axis.title = element_text(size = 12, face="bold"),
+        ) + 
+  labs(
+    title = "Plot A3: Relationship b/w Life Expectancy and Log of GDP Per Capita by Healthcare Spending",
+    subtitle = "Year 1995",
+    x = "GDP Per Capita on Log Scale",
+    y = "Average Life Expectancy in Years") 
+```
+
+#
+
+
+
+```{r echo=FALSE, fig.width=5, fig.height=4,warning=FALSE,message=FALSE}
+# Baseline model
+baseline.model.1995 = lm(lifeexp ~ gdp.log + continent, data = gapminder.1995)
+baseline.model.df.1995 = augment(baseline.model.1995)
+baseline.model.df.1995$.resid = residuals(baseline.model.1995)
+gg9 = ggplot(baseline.model.df.1995, aes(x = gdp.log, y = .resid))+
+  geom_point()+
+  geom_smooth()+ 
+  theme(text = element_text(size = 10, face = "bold"), 
+        axis.title.y = element_blank(),
+        legend.box.just = "center",
+        plot.title = element_text(size = 12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face="bold"),
+        ) + 
+  labs(
+    title = "Plot A4.1: GDP per capita (Baseline)",
+    subtitle = "(lifeexp ~ gdp.log + continent) for the year 1995",
+    x = "GDP Per Capita on Log Scale",
+    y = "Residual") 
+#AIC(baseline.model)
+```
+
+#
+
+
+
+```{r echo=FALSE, fig.width=5, fig.height=4,warning=FALSE,message=FALSE}
+# Main Model
+model.test.1995 = lm(lifeexp ~ gdp.log + continent + continent : gini, data = gapminder.1995)
+model.test.df.1995 = augment(model.test.1995)
+model.test.df.1995$.resid = residuals(model.test.1995)
+gg10 = ggplot(model.test.df.1995, aes(x = gini, y = .resid)) + 
+  geom_point()+ 
+  geom_smooth(method = "loess", method.args = list(degree = 1)) + 
+  theme(text = element_text(size = 10, face = "bold"),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+        legend.box.just = "center",
+        plot.title = element_text(size = 12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face="bold"),
+        ) + 
+  labs(
+    title = "Plot A4.2: Gini Income Inequality ",
+    subtitle = "(lifeexp ~ gdp.log + continent + continent : gini) for the year 1995",
+    x = "Gini Income Inequality",
+    y = "Residual") 
+```
+#
+
+
+```{r fig.height= 4, fig.width=10, fig.align="center",echo=FALSE, warning=FALSE,message=FALSE}
+# ggarrange(gg1,gg2, gg3, ncol = 3, left = "Average Life Expectancy in Years", top = textGrob('Plot 2 : Relation of Life Expectancy w/'), common.legend = TRUE, legend="bottom", font.label = list(size = 5, color = "black", face = "bold", family = NULL))
+
+grid.arrange(gg9,gg10, ncol = 2, left = 'Residual' , top = textGrob(expression(bold('Plot A4: Life Expectancy Residual Plot w/'))))
+```
+
+#
+
+
+
+
+
+
+```{r echo=FALSE}
+display(model.test.1995)
+```
+
+#
+
+
+```{r include=FALSE}
+# Prediction matrix
+predictionMatrix.1995 = expand.grid(gdp.log = seq(5.75, 11.5, 0.05), 
+                                gini = seq(24, 64, 20), 
+                                continent = c(unique(gapminder.1995$continent)))
+
+baseline.preds.1995 = predict(baseline.model.1995, newdata = predictionMatrix.1995, type = "response")
+
+model.test.pred.1995 = predict(model.test.1995, newdata = predictionMatrix.1995, type = "response")
+
+model.test.pred.df.1995 = data.frame(predictionMatrix.1995, baseline = baseline.preds.1995, AddGini = model.test.pred.1995)
+
+model.test.pred.df.plot.1995 <- pivot_longer(model.test.pred.df.1995, 
+                        cols = c(baseline, AddGini),
+                        names_to = "Model",
+                        values_to = "PredictedLifeExpectancy"
+                        )
+```
+
+#
+
+
+```{r, fig.width=10, fig.height=5, echo=FALSE}
+ggplot(data = filter(model.test.pred.df.plot.1995, continent!= "Oceania"), mapping = aes(x = gdp.log, y = PredictedLifeExpectancy, color = Model)) +
+  geom_line()+
+  facet_wrap(~ continent + gini, ncol = 6) + 
+  # scale_color_viridis_d() +
+  theme(text = element_text(size = 10, face = "bold"), 
+        legend.box.just = "center",
+        plot.title = element_text(size = 12, face="bold", hjust = 0.5),
+        plot.subtitle = element_text(size = 9),
+        axis.title = element_text(size = 10, face="bold"),
+        ) + 
+  labs(
+    title = "Plot A5: Predicted Life Expectancy Vs GDP By Gini",
+    subtitle = "Year 1995",
+    x = "GDP Per Capita on Log Scale",
+    y = "AverageLife Expectancy in Years") 
+```
+
