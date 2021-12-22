@@ -1,4 +1,4 @@
-# Analytics-Projects
+# Economic Factors Affecting Life Expectancy
 
 We know life expectancy is positively related to GDP/capita, but after controlling for GDP/capita, 
 we’d like to know... 
